@@ -12,8 +12,5 @@ public:
     int64_t encode(uint8_t* buffer, int64_t p, int64_t p_end, uint8_t* out);
 
 private:
-
-    template <bool is_length>
-    int64_t writeValues(uint8_t* out, const int32_t* values) {
-    }
+    template <bool is_length> int64_t writeValues(uint8_t* out, const int32_t* values) {}
 };

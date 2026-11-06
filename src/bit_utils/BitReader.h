@@ -3,15 +3,13 @@
 
 class BitReader {
 public:
-    BitReader(const uint8_t* buffer, const uint8_t* end) :  current_(buffer), end_(end) {
-        refill();
-    }
+    BitReader(const uint8_t* buffer, const uint8_t* end) : current_(buffer), end_(end) { refill(); }
 
     // Consume one bit.  Result is 0 or 1.
     uint32_t readBit() {
         uint32_t result = bits_ >> 31;
         bits_ <<= 1;
-        position_++; 
+        position_++;
         return result;
     }
 
@@ -36,7 +34,8 @@ public:
         if (extra_bits) {
             readBits(8 - extra_bits);
         }
-  }
+    }
+
 private:
     const uint8_t* current_;
     const uint8_t* end_;
