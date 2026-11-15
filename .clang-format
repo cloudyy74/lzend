@@ -7,6 +7,7 @@ TabWidth: 4
 UseTab: Never
 ColumnLimit: 100
 BreakBeforeBraces: Attach
+AlwaysBreakTemplateDeclarations: Yes
 AccessModifierOffset: -4
 PointerAlignment: Left
 DerivePointerAlignment: false
