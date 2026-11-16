@@ -1,5 +1,6 @@
 #include "ByteIO.h"
 #include "lzend/Constants.h"
+#include "lzend/LzEndDecoder.h"
 #include "lzend/LzEndEncoder.h"
 
 #include <algorithm>
@@ -29,6 +30,23 @@ int64_t lzCompress(uint8_t* buf, int64_t len, uint8_t* out) {
     return out - out_start;
 }
 
+void lzDecompress(uint8_t* buf, int64_t len, uint8_t* out, int64_t out_len) {
+    LzEndDecoder decoder;
+    const uint8_t* buf_end = buf + len;
+
+    while (buf < buf_end) {
+        int32_t compressed_size = readInt<3>(buf);
+        buf += 3;
+
+        decoder.decode(buf, buf + compressed_size, out,
+                       out + std::min(lzend::maxChunkSize, out_len));
+
+        buf += compressed_size;
+        out += lzend::maxChunkSize;
+        out_len -= lzend::maxChunkSize;
+    }
+}
+
 std::unique_ptr<uint8_t[]> readFile(const char* path, int64_t& len) {
     std::ifstream input(path, std::ios::binary | std::ios::ate);
     len = static_cast<int64_t>(input.tellg());
@@ -36,6 +54,22 @@ std::unique_ptr<uint8_t[]> readFile(const char* path, int64_t& len) {
     input.seekg(0);
     input.read(reinterpret_cast<char*>(buffer.get()), len);
     return buffer;
+}
+
+int checkBytes(uint8_t* buf, uint8_t* actual, int64_t len) {
+    int bad = 0;
+    for (int64_t i = 0; i < len; ++i) {
+        uint8_t orig = actual[i];
+        uint8_t v = buf[i];
+        if (orig != v) {
+            if (++bad > 20) {
+                fprintf(stderr, "more than 20 busted\n");
+                break;
+            }
+            fprintf(stderr, "bad idx:%lld,orig:%d,decoded:%d\n", i, orig, v);
+        }
+    }
+    return bad;
 }
 
 void compressFile(const char* input_path, const char* output_path) {
@@ -56,6 +90,15 @@ void compressFile(const char* input_path, const char* output_path) {
     std::ofstream output(output_path, std::ios::binary | std::ios::trunc);
     output.write(reinterpret_cast<const char*>(compressed.get()), bytes_written);
     output.close();
+
+    std::unique_ptr<uint8_t[]> decoded(new uint8_t[len]);
+    lzDecompress(compressed.get(), bytes_written, decoded.get(), len);
+
+    if (checkBytes(decoded.get(), input.get(), len) == 0) {
+        printf("Decompression validated!\n");
+    } else {
+        printf("Decompression failed!\n");
+    }
 }
 
 int main(int argc, char** argv) {
