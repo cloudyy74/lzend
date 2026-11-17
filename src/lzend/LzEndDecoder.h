@@ -27,8 +27,6 @@ private:
         const uint32_t extra_size = readUint<3>(buf.data() + 3);
         buf = buf.subspan(6);
 
-        uint8_t codes[lzend::maxChunkSize];
-
         if (code_size == values.size()) {
             memcpy(codes, buf.data(), values.size());
         } else if (code_size == 1) {
@@ -65,4 +63,6 @@ private:
 
         return 6 + code_size + extra_size;
     }
+
+    uint8_t codes[lzend::maxChunkSize];
 };
