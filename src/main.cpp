@@ -1,104 +1,123 @@
 #include "ByteIO.h"
 #include "lzend/Constants.h"
+#include "lzend/Error.h"
 #include "lzend/LzEndDecoder.h"
 #include "lzend/LzEndEncoder.h"
 
 #include <algorithm>
 #include <bit>
 #include <cstdint>
+#include <filesystem>
 #include <fse.h>
 #include <fstream>
 #include <huf.h>
 #include <iostream>
-#include <memory>
+#include <span>
+#include <vector>
 
-int64_t lzCompress(uint8_t* buf, int64_t len, uint8_t* out) {
-    uint8_t* const out_start = out;
+Result<uint64_t> lzCompress(std::span<uint8_t> buf, uint8_t* out) {
+    const uint8_t* const out_start = out;
     LzEndEncoder encoder(0);
 
-    for (int64_t start = 0; start < len;) {
-        const int64_t remaining = std::min(lzend::maxChunkSize, len - start);
+    for (uint64_t start = 0; start < buf.size();) {
+        const uint32_t remaining =
+            std::min(static_cast<std::uint64_t>(lzend::maxChunkSize), buf.size() - start);
         uint8_t* marker = out;
         out += 3;
 
-        const int64_t chunk_written = encoder.encode(buf, start, start + remaining, out);
-        writeInt<3>(marker, static_cast<int32_t>(chunk_written));
-        out += chunk_written;
+        const auto chunk_written = encoder.encode(buf.subspan(start, remaining), out);
+        if (!chunk_written) {
+            return std::unexpected(std::string{"Encoder error: "} + chunk_written.error());
+        }
+        writeUint<3>(marker, static_cast<int32_t>(*chunk_written));
+        out += *chunk_written;
         start += remaining;
     }
 
     return out - out_start;
 }
 
-void lzDecompress(uint8_t* buf, int64_t len, uint8_t* out, int64_t out_len) {
+Result<void> lzDecompress(std::span<const uint8_t> buf, std::span<uint8_t> out) {
     LzEndDecoder decoder;
-    const uint8_t* buf_end = buf + len;
 
-    while (buf < buf_end) {
-        int32_t compressed_size = readInt<3>(buf);
-        buf += 3;
+    while (buf.size() > 0) {
+        uint32_t compressed_size = readUint<3>(buf.data());
+        buf = buf.subspan(3);
 
-        decoder.decode(buf, buf + compressed_size, out,
-                       out + std::min(lzend::maxChunkSize, out_len));
-
-        buf += compressed_size;
-        out += lzend::maxChunkSize;
-        out_len -= lzend::maxChunkSize;
-    }
-}
-
-std::unique_ptr<uint8_t[]> readFile(const char* path, int64_t& len) {
-    std::ifstream input(path, std::ios::binary | std::ios::ate);
-    len = static_cast<int64_t>(input.tellg());
-    std::unique_ptr<uint8_t[]> buffer(new uint8_t[len]);
-    input.seekg(0);
-    input.read(reinterpret_cast<char*>(buffer.get()), len);
-    return buffer;
-}
-
-int checkBytes(uint8_t* buf, uint8_t* actual, int64_t len) {
-    int bad = 0;
-    for (int64_t i = 0; i < len; ++i) {
-        uint8_t orig = actual[i];
-        uint8_t v = buf[i];
-        if (orig != v) {
-            if (++bad > 20) {
-                fprintf(stderr, "more than 20 busted\n");
-                break;
-            }
-            fprintf(stderr, "bad idx:%lld,orig:%d,decoded:%d\n", i, orig, v);
+        const uint32_t chunk_size = std::min(static_cast<size_t>(lzend::maxChunkSize), out.size());
+        auto result = decoder.decode(buf.subspan(0, compressed_size), out.data());
+        if (!result) {
+            return std::unexpected(result.error());
         }
+
+        buf = buf.subspan(compressed_size);
+        out = out.subspan(chunk_size);
     }
-    return bad;
+
+    return {};
 }
 
-void compressFile(const char* input_path, const char* output_path) {
-    int64_t len = 0;
-    std::unique_ptr<uint8_t[]> input = readFile(input_path, len);
+Result<std::vector<uint8_t>> readFile(const std::filesystem::path& path) {
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file) {
+        return std::unexpected{std::string{"Can't open file"}};
+    }
 
-    const size_t count = static_cast<size_t>(lzend::maxChunkSize);
-    const uint32_t extra_bits = static_cast<uint32_t>(std::bit_width(count) - 1);
-    const size_t extra_size = (extra_bits * count + 7) / 8;
-    const size_t values_size = 6 + FSE_compressBound(count) + extra_size;
-    const int64_t chunk_capacity =
-        static_cast<int64_t>(3 + 6 + HUF_compressBound(count) + 3 + 3 * values_size);
-    const int64_t num_chunks = len / lzend::maxChunkSize + (len % lzend::maxChunkSize != 0);
+    const uint64_t size = file.tellg();
+    std::vector<uint8_t> buf(size);
+    file.seekg(0);
 
-    std::unique_ptr<uint8_t[]> compressed(new uint8_t[num_chunks * chunk_capacity]);
-    const int64_t bytes_written = lzCompress(input.get(), len, compressed.get());
+    if (!file.read(reinterpret_cast<char*>(buf.data()), size)) {
+        return std::unexpected{std::string{"Can't get file size"}};
+    }
+
+    return buf;
+}
+
+Result<void> compressFile(const std::filesystem::path& input_path,
+                          const std::filesystem::path& output_path) {
+    auto input = readFile(input_path);
+    if (!input) {
+        return std::unexpected{std::string{"Can't read file: "} + input.error()};
+    }
+    const uint64_t input_size = input->size();
+
+    const uint64_t count = lzend::maxChunkSize;
+    const uint64_t extra_bits = std::bit_width(count) - 1;
+
+    const uint64_t extra_size = (extra_bits * count + 7) / 8;
+    const uint64_t values_size = 6 + FSE_compressBound(count) + extra_size;
+    const uint64_t literals_size = 6 + HUF_compressBound(count);
+
+    const uint64_t chunk_size = 3 + literals_size + 3 + 3 * values_size;
+    ;
+    const uint64_t num_chunks =
+        input_size / lzend::maxChunkSize + (input_size % lzend::maxChunkSize != 0);
+
+    auto compressed = std::make_unique_for_overwrite<uint8_t[]>(num_chunks * chunk_size);
+    const auto bytes_written = lzCompress(*input, compressed.get());
+    if (!bytes_written) {
+        return std::unexpected(std::string{"Can't compress file: "} + bytes_written.error());
+    }
 
     std::ofstream output(output_path, std::ios::binary | std::ios::trunc);
-    output.write(reinterpret_cast<const char*>(compressed.get()), bytes_written);
+    output.write(reinterpret_cast<const char*>(compressed.get()), *bytes_written);
     output.close();
 
-    std::unique_ptr<uint8_t[]> decoded(new uint8_t[len]);
-    lzDecompress(compressed.get(), bytes_written, decoded.get(), len);
+    std::cout << "Encoded " << input_size << " bytes into " << *bytes_written << std::endl;
 
-    if (checkBytes(decoded.get(), input.get(), len) == 0) {
-        printf("Decompression validated!\n");
-    } else {
-        printf("Decompression failed!\n");
+    std::vector<uint8_t> decoded(input_size);
+    auto result = lzDecompress(std::span(compressed.get(), *bytes_written), decoded);
+    if (!result) {
+        return std::unexpected(result.error());
     }
+
+    if (input != decoded) {
+        return std::unexpected(std::string{"Decompression validation failed"});
+    }
+
+    std::cout << "Decompression validated!" << std::endl;
+    return {};
 }
 
 int main(int argc, char** argv) {
@@ -107,10 +126,9 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    try {
-        compressFile(argv[1], argv[2]);
-    } catch (const std::exception& error) {
-        std::cerr << "Error: " << error.what() << '\n';
+    auto result = compressFile(argv[1], argv[2]);
+    if (!result) {
+        std::cerr << result.error() << '\n';
         return 1;
     }
 

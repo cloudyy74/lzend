@@ -2,50 +2,59 @@
 
 #include "BitReader.h"
 #include "ByteIO.h"
+#include "Error.h"
 #include "lzend/Constants.h"
 #include <cstdint>
 #include <cstring>
 #include <fse.h>
+#include <span>
 
 class LzEndDecoder {
 public:
-    bool decode(uint8_t* buf, uint8_t* end, uint8_t* out, uint8_t* out_end);
+    Result<void> decode(std::span<const uint8_t> buf, uint8_t* out);
 
 private:
     template <bool is_offset>
-    int64_t decodeValues(const uint8_t* buf, const uint8_t* end, uint32_t num_seq,
-                         uint32_t* values) {
-        const uint32_t code_size = readInt<3>(buf);
-        const uint32_t extra_size = readInt<3>(buf + 3);
-        buf += 6;
+    Result<uint32_t> decodeValues(std::span<const uint8_t> buf, std::span<uint32_t> values) {
+        constexpr uint32_t extra_threshold =
+            is_offset ? lzend::offsetExtraThreshold : lzend::lengthExtraThreshold;
+        constexpr uint32_t code_base = is_offset ? lzend::offsetCodeBase : lzend::lengthCodeBase;
+        if (buf.size() < 6) {
+            return std::unexpected(std::string{"Unexpected end of input"});
+        }
+
+        const uint32_t code_size = readUint<3>(buf.data());
+        const uint32_t extra_size = readUint<3>(buf.data() + 3);
+        buf = buf.subspan(6);
 
         uint8_t codes[lzend::maxChunkSize];
 
-        if (code_size == num_seq) {
-            memcpy(codes, buf, num_seq);
+        if (code_size == values.size()) {
+            memcpy(codes, buf.data(), values.size());
         } else if (code_size == 1) {
-            memset(codes, buf[0], num_seq);
+            memset(codes, buf[0], values.size());
         } else {
-            const size_t decoded_size = FSE_decompress(codes, num_seq, buf, code_size);
+            const size_t decoded_size = FSE_decompress(codes, values.size(), buf.data(), code_size);
 
-            if (FSE_isError(decoded_size) || decoded_size != num_seq) {
-                return -1;
+            if (FSE_isError(decoded_size)) {
+                return std::unexpected(std::string{"FSE decompression failed: "} +
+                                       FSE_getErrorName(decoded_size));
             }
         }
 
-        const uint8_t* extra = buf + code_size;
+        const uint8_t* extra = buf.data() + code_size;
         BitReader reader(extra, extra + extra_size);
-        uint64_t bits_used = 0;
+        uint32_t bits_used = 0;
 
-        for (uint32_t i = 0; i < num_seq; ++i) {
+        for (uint32_t i = 0; i < values.size(); ++i) {
             const uint32_t code = codes[i];
 
-            if (code < (is_offset ? 2 : 16)) {
+            if (code < extra_threshold) {
                 values[i] = code;
                 continue;
             }
 
-            const uint32_t bits = code - (is_offset ? 1 : 12);
+            const uint32_t bits = code - code_base;
 
             const uint32_t base = 1 << bits;
 
