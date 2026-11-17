@@ -84,9 +84,7 @@ void LzEndEncoder::greedyParse(std::span<const uint8_t> buffer) {
     uint32_t p = 0;
     const uint32_t p_end = buffer.size();
 
-    uint32_t phrase_ends[lzend::maxChunkSize];
     uint32_t num_phrases = 0;
-    uint32_t pi[lzend::maxChunkSize];
 
     uint32_t num_literals = 0;
 

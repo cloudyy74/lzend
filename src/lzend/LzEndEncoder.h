@@ -26,7 +26,6 @@ private:
 
         const size_t code_count = values.size();
         uint32_t extra_bit_count = 0;
-        uint8_t codes[lzend::maxChunkSize];
 
         for (uint32_t i = 0; i < values.size(); ++i) {
             const uint32_t v = values[i];
@@ -90,4 +89,7 @@ private:
     uint32_t match_offsets[lzend::maxChunkSize];
     uint32_t match_lengths[lzend::maxChunkSize];
     uint32_t literal_lengths[lzend::maxChunkSize];
+    uint8_t codes[lzend::maxChunkSize];
+    uint32_t phrase_ends[lzend::maxChunkSize];
+    uint32_t pi[lzend::maxChunkSize];
 };
